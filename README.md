@@ -28,7 +28,15 @@ A free interactive coding education platform where users learn Python, C, and Ja
 - **Code persistence** — user code is auto-saved per lesson and restored on revisit, so learners never lose their work
 - **Curriculum from database** — courses and lessons are served from PostgreSQL with ordering, not hardcoded in the frontend
 - **JWT authentication** — signup/login with httpOnly cookie-based sessions
-- **Dark theme** — GTA Vice City-inspired color palette (muted rose + steel blue on warm purple backgrounds)
+- **Dark theme** — clean dark palette with soft blue accents, easy on the eyes
+
+## Screenshots
+
+![Home Page](screenshots/1.png)
+![Curriculum Page](screenshots/2.png)
+![Lesson View - Content & Code](screenshots/3.png)
+![Lesson View - More Content](screenshots/4.png)
+![Lesson View - Code Output](screenshots/5.png)
 
 ## Tech Stack
 
