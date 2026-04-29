@@ -22,10 +22,11 @@ A free interactive coding education platform where users learn Python, C, and Ja
 
 - **Split-screen lesson view** — educational Markdown content on the left, live code editor (CodeMirror) on the right
 - **Inline runnable code blocks** — code examples inside lesson text are interactive; click "Run Code" to execute them directly in the lesson
+- **Test case validation** — each lesson has test cases that verify the user's code (like LeetCode). A lesson is marked complete only when all tests pass — there is no manual "complete" button
 - **Multi-language support** — Python (10 lessons), C (2 lessons), Java (2 lessons) with language-specific syntax highlighting
 - **Remote code execution** — user code runs server-side via Piston API (production) or Docker containers (development), not in the browser
-- **Progress tracking** — logged-in users can mark lessons as complete, and progress is displayed per-course with visual progress bars
-- **Code persistence** — user code is auto-saved per lesson and restored on revisit, so learners never lose their work
+- **Progress tracking** — lessons are automatically marked complete when all test cases pass, with per-course progress bars on the curriculum page
+- **Code persistence** — user code is saved per lesson and restored on revisit, so learners never lose their work
 - **Curriculum from database** — courses and lessons are served from PostgreSQL with ordering, not hardcoded in the frontend
 - **JWT authentication** — signup/login with httpOnly cookie-based sessions
 - **Dark theme** — clean dark palette with soft blue accents, easy on the eyes
@@ -33,10 +34,12 @@ A free interactive coding education platform where users learn Python, C, and Ja
 ## Screenshots
 
 ![Home Page](screenshots/1.png)
-![Curriculum Page](screenshots/2.png)
-![Lesson View - Content & Code](screenshots/3.png)
-![Lesson View - More Content](screenshots/4.png)
-![Lesson View - Code Output](screenshots/5.png)
+![Home Page - Logged In](screenshots/2.png)
+![Curriculum Page](screenshots/3.png)
+![Curriculum - Lesson List with Progress](screenshots/4.png)
+![Lesson View - Submitting Code](screenshots/5.png)
+![Lesson View - All Tests Passed](screenshots/6.png)
+![Lesson View - Tests Failed](screenshots/7.png)
 
 ## Tech Stack
 
@@ -172,7 +175,7 @@ cyberstars/
 │   │   ├── apiClient.ts                   # Centralized fetch wrapper (credentials, error handling)
 │   │   ├── authService.ts                 # login, signup, logout, getMe
 │   │   ├── lessonService.ts               # fetchLesson, fetchLessonCode, fetchCurriculum
-│   │   ├── codeExecutionService.ts        # runCode
+│   │   ├── codeExecutionService.ts        # runCode, submitCode
 │   │   └── progressService.ts             # getCourseProgress, markComplete, saveCode
 │   ├── context/
 │   │   └── AuthContext.tsx                 # Global auth state (user, login, signup, logout)
@@ -192,6 +195,7 @@ cyberstars/
 │   │   ├── code/
 │   │   │   ├── CodeEditor.tsx             # CodeMirror wrapper (language detection, oneDark theme)
 │   │   │   ├── CodeOutput.tsx             # Output display panel with auto-scroll
+│   │   │   ├── TestResults.tsx            # Test case results display (pass/fail per test)
 │   │   │   ├── CodeCell.tsx               # Self-contained inline code block (editor + run + output)
 │   │   │   └── RunButton.tsx              # Run button with loading state
 │   │   ├── markdown/
@@ -224,17 +228,18 @@ cyberstars/
 │   ├── services/                          # Business logic
 │   │   ├── authService.ts                 # signup, login, getUser (bcrypt + JWT)
 │   │   ├── lessonService.ts               # getLessonContent, getLessonCode, getCurriculum
-│   │   ├── codeExecutionService.ts        # execute (Piston API or Docker)
+│   │   ├── codeExecutionService.ts        # execute (Piston API or Docker, supports stdin)
+│   │   ├── testRunnerService.ts           # Run code against JSON test cases, compare output
 │   │   └── progressService.ts             # markComplete, saveCode, getSavedCode, getCourseProgress
 │   ├── controllers/                       # Request handlers (thin req/res layer)
 │   │   ├── authController.ts              # signup, login, logout, me
 │   │   ├── lessonController.ts            # getLesson, getLessonCode, getCurriculum
-│   │   ├── codeController.ts              # executeCode
+│   │   ├── codeController.ts              # executeCode, submitCode
 │   │   └── progressController.ts          # getCourseProgress, markComplete, saveCode, trackAccess
 │   ├── routes/                            # Route wiring to controllers
 │   │   ├── authRoutes.ts                  # /auth/*
 │   │   ├── lessonRoutes.ts                # /api/lessons/*, /api/lesson-code/*, /api/curriculum
-│   │   ├── codeRoutes.ts                  # /api/run-code
+│   │   ├── codeRoutes.ts                  # /api/run-code, /api/run-code/submit
 │   │   └── progressRoutes.ts              # /api/progress/* (all authenticated)
 │   ├── db/
 │   │   ├── db.ts                          # PostgreSQL connection pool
@@ -284,6 +289,7 @@ Authentication uses httpOnly JWT cookies. Protected endpoints require the `token
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | POST | `/api/run-code` | No | Execute code (`{ code, language }`) and return output |
+| POST | `/api/run-code/submit` | Optional | Run code against lesson test cases (`{ code, language, courseKey, lessonSlug }`). Returns per-test results. Auto-marks lesson complete if all tests pass (when authenticated) |
 
 ### Progress (all authenticated)
 
@@ -349,8 +355,22 @@ Lessons are authored in Markdown and stored in `back/lessons/:language/`. Each l
 
 - **`lesson-slug.md`** — the educational content (explanations, examples, inline code blocks)
 - **`lesson-slug-code.md`** — the starter code template for the right-side editor
+- **`lesson-slug-tests.json`** — test cases that validate the user's solution
 
 Code blocks in the Markdown content that are tagged with a supported language (`` ```python ``, `` ```c ``, `` ```java ``) are rendered as interactive CodeCell components with their own editor and "Run Code" button, so learners can experiment with examples without leaving the lesson text.
+
+### Test Cases
+
+Each lesson's test file defines an array of test cases. Supported test modes:
+
+| Mode | Description |
+|------|-------------|
+| `exact` | Output must match expected string exactly (trimmed) |
+| `contains` | Output must contain the expected string |
+| `any` | Any non-empty output passes |
+| `line` | A specific line of the output must match (by line index) |
+
+Tests can also use `overrides` to inject variable values into user code (for testing different inputs on the same logic), and `append` to add function calls after user code (for testing function definitions).
 
 ### Available lessons
 
@@ -360,7 +380,7 @@ Code blocks in the Markdown content that are tagged with a supported language (`
 | C | 2 | variables, print |
 | Java | 2 | variables, print |
 
-Adding a new lesson requires: (1) creating the `.md` file in `back/lessons/:lang/`, (2) optionally creating a `-code.md` starter template, and (3) adding a row to the `lessons` table via a new migration or direct insert.
+Adding a new lesson requires: (1) creating the `.md` file in `back/lessons/:lang/`, (2) optionally creating a `-code.md` starter template, (3) creating a `-tests.json` file with test cases, and (4) adding a row to the `lessons` table via a new migration or direct insert.
 
 ## Architecture Decisions
 
@@ -373,6 +393,8 @@ Adding a new lesson requires: (1) creating the `.md` file in `back/lessons/:lang
 - **Centralized API client**: All frontend API calls go through `apiClient.ts`, which handles base URL resolution, credentials, JSON parsing, and error normalization. No raw `fetch()` calls anywhere in the frontend — every service function is a one-liner that calls `api.get()` or `api.post()`.
 
 - **AuthContext over per-page auth checks**: A single `AuthContext` provider wraps the entire app and checks `/auth/me` once on mount. Every page and component accesses auth state via `useAuth()` — no duplicate fetch calls, no prop drilling, and login/logout state updates propagate everywhere instantly.
+
+- **Test-driven lesson completion**: Lessons are completed by passing all test cases, not by clicking a button. This ensures learners actually solve the exercise. Test cases are defined as JSON files on disk alongside lesson content, supporting exact match, contains, line-based checks, variable overrides (for testing different inputs), and code appending (for testing function definitions).
 
 - **Dual code execution strategy**: Development uses Docker for offline work and full control; production uses the free Piston API to avoid running Docker in hosted environments. The `codeExecutionService` abstracts this behind a single `execute(code, language)` interface — the rest of the app doesn't know which backend is running.
 
