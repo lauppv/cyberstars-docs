@@ -45,11 +45,13 @@ A free interactive coding education platform where users learn Python, C, and Ja
 
 **Frontend:** React 19 + TypeScript + Vite 7 + Tailwind CSS 4 + React Router 7 + CodeMirror 4 + React Markdown
 
-**Backend:** Node.js + Express 5 + TypeScript + PostgreSQL (pg driver) + tsx
+**Backend:** Node.js + Express 5 + TypeScript + Prisma 6 (PostgreSQL) + Zod 4 + tsx
 
 **Code Execution:** Piston API (production) / Docker containers (development)
 
 **Auth:** JWT (jsonwebtoken) + bcryptjs + httpOnly cookies
+
+**Shared:** A top-level `shared/` folder holds DTO/contract types imported by both backend and frontend, so request/response shapes can never drift between the two sides.
 
 ## Prerequisites
 
@@ -106,6 +108,8 @@ cd cyberstars
 npm install
 ```
 
+`npm install` runs `prisma generate` automatically (via `postinstall`), producing the typed Prisma Client used by the backend.
+
 2. Create and configure the `.env` file in the project root:
 
 ```env
@@ -115,6 +119,8 @@ DB_NAME=cyberstars
 DB_PASSWORD=your_password
 DB_PORT=5432
 
+DATABASE_URL=postgresql://cyberstars:your_password@localhost:5432/cyberstars
+
 EXPRESS_PORT=5000
 JWT_SECRET=your_secret_key
 
@@ -123,10 +129,19 @@ VITE_DEV_API_URL=http://localhost:5000
 VITE_PROD_API_URL=
 ```
 
-3. Run database migrations (creates tables and seeds curriculum data):
+`DATABASE_URL` is what the Prisma CLI reads (`prisma migrate`, `prisma studio`, etc.). The runtime backend can construct it from the individual `DB_*` vars on its own, but the CLI requires the assembled URL.
+
+3. Apply the database schema and seed the curriculum:
 
 ```bash
-npm run migrate
+npm run db:deploy   # apply migrations to a fresh database
+npm run db:seed     # seed courses + lessons
+```
+
+If the database already has the legacy SQL-migrated schema, mark the Prisma baseline as applied instead of running it:
+
+```bash
+npx prisma migrate resolve --applied 0_init
 ```
 
 4. Start the development servers:
@@ -143,6 +158,16 @@ For production, build and start with:
 npm run start
 ```
 
+### Database scripts
+
+| Script | What it does |
+|--------|--------------|
+| `npm run db:generate` | Regenerates the Prisma Client from `schema.prisma` |
+| `npm run db:migrate` | `prisma migrate dev` — creates and applies a new migration in development |
+| `npm run db:deploy` | `prisma migrate deploy` — applies pending migrations (used in production / fresh installs) |
+| `npm run db:seed` | Seeds the curriculum + lessons via `prisma/seed.ts` |
+| `npm run db:studio` | Opens Prisma Studio (DB browser at `http://localhost:5555`) |
+
 ## Environment Variables
 
 | Variable | Description | Required | Default |
@@ -152,6 +177,7 @@ npm run start
 | `DB_NAME` | Database name | Yes | — |
 | `DB_PASSWORD` | Database password | Yes | — |
 | `DB_PORT` | PostgreSQL port | No | `5432` |
+| `DATABASE_URL` | Connection string used by the Prisma CLI | Yes (for `prisma` commands) | — |
 | `EXPRESS_PORT` | Backend server port | No | `5000` |
 | `JWT_SECRET` | Secret for signing JWT tokens | Yes | — |
 | `NODE_ENV` | `development` or `production` | No | `development` |
@@ -161,118 +187,113 @@ npm run start
 
 ```
 cyberstars/
-├── front/                                 # Frontend (React + TypeScript)
-│   ├── main.tsx                           # React entry point
-│   ├── App.tsx                            # Router setup, AuthProvider wrapper
-│   ├── index.css                          # Tailwind imports + custom scrollbar styles
-│   ├── vite-env.d.ts                      # Vite type declarations
+├── shared/                                 # Cross-cutting types (imported by both server and client)
+│   ├── auth.ts                             # AuthenticatedUser, LoginPayload, SignupPayload, TokenPayload
+│   ├── lesson.ts                           # LessonContent, LessonMeta, Course
+│   ├── progress.ts                         # CourseProgress, LessonProgressItem
+│   └── tests.ts                            # TestCase, TestResult, SubmitResult
+│
+├── prisma/                                 # Schema, migrations, seed
+│   ├── schema.prisma                       # 5 models with camelCase fields + @map snake_case columns
+│   ├── seed.ts                             # Seeds curriculum + lessons
+│   └── migrations/
+│       ├── migration_lock.toml
+│       └── 0_init/
+│           └── migration.sql               # Baseline schema (users, curriculum, lessons, progress, saved code)
+│
+├── server/                                   # Backend (Express + TypeScript)
+│   ├── server.ts                           # Express entry point, route mounting, static SPA serving
+│   ├── tsconfig.json                       # Backend TypeScript config (rootDir = repo root, includes shared/)
+│   ├── config/
+│   │   ├── env.ts                          # dotenv + required-var validation, typed config object
+│   │   ├── db.ts                           # Prisma Client singleton (URL built from env or DATABASE_URL)
+│   │   └── index.ts                        # Re-exports `config` and `prisma`
+│   ├── schemas/                            # Zod request schemas (input validation)
+│   │   ├── auth.schema.ts                  # signupSchema, loginSchema
+│   │   ├── code.schema.ts                  # runCodeSchema, submitCodeSchema (language enum-restricted)
+│   │   └── progress.schema.ts              # saveCodeSchema
+│   ├── middleware/
+│   │   ├── auth.ts                         # JWT verification (authenticateToken + optionalAuth)
+│   │   ├── validate.ts                     # validateBody(schema) — Zod parser middleware
+│   │   └── errorHandler.ts                 # AppError class + global error handler
+│   ├── repositories/                       # Pure data access (Prisma Client only, no business logic)
+│   │   ├── user.repository.ts              # findByEmail, findById, create
+│   │   ├── curriculum.repository.ts        # getAllCourses, getLessonsByCourse, getAllLessons, getLessonCount
+│   │   └── progress.repository.ts          # upsertProgress, upsertCode, getSavedCode, touchAccess
+│   ├── services/                           # Business logic (no req/res, no SQL)
+│   │   ├── auth.service.ts                 # signup, login, getUser (bcrypt + JWT)
+│   │   ├── lesson.service.ts               # getLessonContent, getLessonCode, getCurriculum
+│   │   ├── code-execution.service.ts       # execute (Piston API or Docker, supports stdin)
+│   │   ├── test-runner.service.ts          # Run code against JSON test cases, compare output
+│   │   └── progress.service.ts             # markComplete, saveCode, getSavedCode, getCourseProgress
+│   ├── controllers/                        # Thin req/res layer
+│   │   ├── auth.controller.ts              # signup, login, logout, me
+│   │   ├── lesson.controller.ts            # getLesson, getLessonCode, getCurriculum
+│   │   ├── code.controller.ts              # executeCode, submitCode
+│   │   └── progress.controller.ts          # getCourseProgress, markComplete, saveCode, trackAccess
+│   ├── routes/                             # Route wiring + per-route middleware (auth + validate)
+│   │   ├── auth.routes.ts                  # /auth/*
+│   │   ├── lesson.routes.ts                # /api/lessons/*, /api/lesson-code/*, /api/curriculum
+│   │   ├── code.routes.ts                  # /api/run-code, /api/run-code/submit
+│   │   └── progress.routes.ts              # /api/progress/* (all authenticated)
 │   ├── types/
-│   │   ├── auth.ts                        # User, LoginPayload, SignupPayload
-│   │   ├── curriculum.ts                  # Course, LessonMeta, LessonContent
-│   │   ├── progress.ts                    # LessonProgress, CourseProgress
-│   │   └── api.ts                         # ApiError, isApiError helper
+│   │   └── express.d.ts                    # Augments Express Request with `user` property
+│   ├── lessons/                            # Markdown lesson content (read from filesystem)
+│   │   ├── python/                         # 10 lessons (print, variables, loops, functions, etc.)
+│   │   ├── c/                              # 2 lessons (variables, print)
+│   │   └── java/                           # 2 lessons (variables, print)
+│   └── runtimes/                           # Docker images + scratch dirs for dev code execution
+│       ├── python/
+│       └── c/
+│
+├── client/                                  # Frontend (React + TypeScript)
+│   ├── main.tsx                            # React entry point
+│   ├── App.tsx                             # Router setup, AuthProvider wrapper
+│   ├── index.css                           # Tailwind imports + custom scrollbar styles
+│   ├── vite-env.d.ts                       # Vite type declarations
+│   ├── types/
+│   │   └── api.ts                          # ApiError + isApiError (frontend-only helper)
 │   ├── services/
-│   │   ├── apiClient.ts                   # Centralized fetch wrapper (credentials, error handling)
-│   │   ├── authService.ts                 # login, signup, logout, getMe
-│   │   ├── lessonService.ts               # fetchLesson, fetchLessonCode, fetchCurriculum
-│   │   ├── codeExecutionService.ts        # runCode, submitCode
-│   │   └── progressService.ts             # getCourseProgress, markComplete, saveCode
+│   │   ├── apiClient.ts                    # Centralized fetch wrapper (credentials, error normalization)
+│   │   ├── authService.ts                  # login, signup, logout, getMe
+│   │   ├── lessonService.ts                # fetchLesson, fetchLessonCode, fetchCurriculum
+│   │   ├── codeExecutionService.ts         # runCode, submitCode
+│   │   └── progressService.ts              # getCourseProgress, markLessonComplete, saveCode
 │   ├── context/
 │   │   └── AuthContext.tsx                 # Global auth state (user, login, signup, logout)
 │   ├── hooks/
-│   │   ├── useLesson.ts                   # Fetches lesson content + saved code or template
-│   │   ├── useCodeExecution.ts            # Runs code with loading/output state
-│   │   └── useProgress.ts                 # Track/save progress per course
+│   │   ├── useLesson.ts                    # Fetches lesson content + saved code or template
+│   │   ├── useCodeExecution.ts             # Runs code with loading/output state
+│   │   └── useProgress.ts                  # Track/save progress per course
 │   ├── components/
-│   │   ├── ui/
-│   │   │   ├── Button.tsx                 # 4 variants: primary, outline, danger, ghost
-│   │   │   ├── Input.tsx                  # Styled input with error state
-│   │   │   ├── Modal.tsx                  # Backdrop + centered card overlay
-│   │   │   └── LoadingSpinner.tsx         # Animated spinner
-│   │   ├── layout/
-│   │   │   ├── Navbar.tsx                 # Top navigation bar with CyberStars logo
-│   │   │   └── PageContainer.tsx          # Consistent page background wrapper
-│   │   ├── code/
-│   │   │   ├── CodeEditor.tsx             # CodeMirror wrapper (language detection, oneDark theme)
-│   │   │   ├── CodeOutput.tsx             # Output display panel with auto-scroll
-│   │   │   ├── TestResults.tsx            # Test case results display (pass/fail per test)
-│   │   │   ├── CodeCell.tsx               # Self-contained inline code block (editor + run + output)
-│   │   │   └── RunButton.tsx              # Run button with loading state
-│   │   ├── markdown/
-│   │   │   └── MarkdownRenderer.tsx       # ReactMarkdown with CodeCell for runnable code blocks
-│   │   └── progress/
-│   │       ├── ProgressBar.tsx            # Visual completion bar per course
-│   │       └── LessonStatusBadge.tsx      # Completed/incomplete indicator
+│   │   ├── ui/                             # Button, Input, Modal, LoadingSpinner
+│   │   ├── layout/                         # Navbar, PageContainer
+│   │   ├── code/                           # CodeEditor, CodeOutput, TestResults, CodeCell, RunButton
+│   │   ├── markdown/                       # MarkdownRenderer (with CodeCell for runnable blocks)
+│   │   └── progress/                       # ProgressBar, LessonStatusBadge
 │   └── pages/
-│       ├── HomePage.tsx                   # Landing page with auth-aware greeting
-│       ├── AuthPage.tsx                   # Login/signup toggle form
-│       ├── CurriculumPage.tsx             # Course grid with progress + lesson modal
-│       └── LessonPage.tsx                 # Split-screen lesson view (content + editor)
+│       ├── HomePage.tsx                    # Landing page with auth-aware greeting
+│       ├── AuthPage.tsx                    # Login/signup toggle form
+│       ├── CurriculumPage.tsx              # Course grid with progress + lesson modal
+│       └── LessonPage.tsx                  # Split-screen lesson view (content + editor)
 │
-├── back/                                  # Backend (Express + TypeScript)
-│   ├── server.ts                          # Express entry point, route mounting, static serving
-│   ├── config.ts                          # Centralized environment config
-│   ├── tsconfig.json                      # Backend TypeScript config
-│   ├── types/
-│   │   ├── auth.ts                        # User, TokenPayload, AuthenticatedUser
-│   │   ├── lesson.ts                      # LessonContent, LessonRow, CurriculumRow
-│   │   ├── progress.ts                    # UserLessonProgress, UserSavedCode, CourseProgressSummary
-│   │   └── express.d.ts                   # Extends Express Request with user property
-│   ├── middleware/
-│   │   ├── authToken.ts                   # JWT verification + optional auth middleware
-│   │   └── errorHandler.ts                # AppError class + global error handler
-│   ├── repositories/                      # Pure SQL queries, typed results
-│   │   ├── userRepository.ts              # findByEmail, findById, create
-│   │   ├── progressRepository.ts          # upsertProgress, upsertCode, getSavedCode, touchAccess
-│   │   └── curriculumRepository.ts        # getAllCourses, getLessonsByCourse, getLessonCount
-│   ├── services/                          # Business logic
-│   │   ├── authService.ts                 # signup, login, getUser (bcrypt + JWT)
-│   │   ├── lessonService.ts               # getLessonContent, getLessonCode, getCurriculum
-│   │   ├── codeExecutionService.ts        # execute (Piston API or Docker, supports stdin)
-│   │   ├── testRunnerService.ts           # Run code against JSON test cases, compare output
-│   │   └── progressService.ts             # markComplete, saveCode, getSavedCode, getCourseProgress
-│   ├── controllers/                       # Request handlers (thin req/res layer)
-│   │   ├── authController.ts              # signup, login, logout, me
-│   │   ├── lessonController.ts            # getLesson, getLessonCode, getCurriculum
-│   │   ├── codeController.ts              # executeCode, submitCode
-│   │   └── progressController.ts          # getCourseProgress, markComplete, saveCode, trackAccess
-│   ├── routes/                            # Route wiring to controllers
-│   │   ├── authRoutes.ts                  # /auth/*
-│   │   ├── lessonRoutes.ts                # /api/lessons/*, /api/lesson-code/*, /api/curriculum
-│   │   ├── codeRoutes.ts                  # /api/run-code, /api/run-code/submit
-│   │   └── progressRoutes.ts              # /api/progress/* (all authenticated)
-│   ├── db/
-│   │   ├── db.ts                          # PostgreSQL connection pool
-│   │   └── migrations/
-│   │       ├── 001_create_users.sql       # Users table
-│   │       ├── 002_create_lessons.sql     # Lessons table (course_key, slug, sort_order)
-│   │       ├── 003_create_curriculum.sql  # Curriculum table (key, title, description)
-│   │       ├── 004_create_user_progress.sql # Lesson completion tracking
-│   │       ├── 005_create_user_code.sql   # Saved user code per lesson
-│   │       ├── 006_seed_curriculum.sql    # Seeds courses + lessons from markdown files
-│   │       └── migrate.ts                 # Migration runner
-│   └── lessons/                           # Markdown lesson content (read from filesystem)
-│       ├── python/                        # 10 lessons (print, variables, loops, functions, etc.)
-│       ├── c/                             # 2 lessons (variables, print)
-│       └── java/                          # 2 lessons (variables, print)
-│
-├── index.html                             # HTML entry point
-├── package.json                           # Dependencies + scripts
-├── tsconfig.json                          # Frontend TypeScript config
-├── vite.config.ts                         # Vite config (React, Tailwind, API proxy)
-└── eslint.config.js                       # ESLint config (TS + React)
+├── index.html                              # HTML entry point
+├── package.json                            # Dependencies + scripts
+├── tsconfig.json                           # Frontend TypeScript config (includes shared/)
+├── vite.config.ts                          # Vite config (React, Tailwind, API proxy)
+└── eslint.config.js                        # ESLint config (TS + React)
 ```
 
 ## API Endpoints
 
-Authentication uses httpOnly JWT cookies. Protected endpoints require the `token` cookie set by login/signup.
+Authentication uses httpOnly JWT cookies. Protected endpoints require the `token` cookie set by login/signup. All write endpoints validate request bodies via Zod schemas in `server/schemas/` — invalid bodies return `400` with a list of issues.
 
 ### Auth
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| POST | `/auth/signup` | No | Register user, set JWT cookie |
-| POST | `/auth/login` | No | Login, set JWT cookie |
+| POST | `/auth/signup` | No | Register user, set JWT cookie. Body validated by `signupSchema` |
+| POST | `/auth/login` | No | Login, set JWT cookie. Body validated by `loginSchema` |
 | POST | `/auth/logout` | No | Clear JWT cookie |
 | GET | `/auth/me` | Yes | Get current user (id, name, email) |
 
@@ -288,8 +309,8 @@ Authentication uses httpOnly JWT cookies. Protected endpoints require the `token
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| POST | `/api/run-code` | No | Execute code (`{ code, language }`) and return output |
-| POST | `/api/run-code/submit` | Optional | Run code against lesson test cases (`{ code, language, courseKey, lessonSlug }`). Returns per-test results. Auto-marks lesson complete if all tests pass (when authenticated) |
+| POST | `/api/run-code` | No | Execute code (`{ code, language }`) and return output. Validated by `runCodeSchema` |
+| POST | `/api/run-code/submit` | Optional | Run code against lesson test cases (`{ code, language, courseKey, lessonSlug }`). Returns per-test results. Auto-marks lesson complete if all tests pass (when authenticated). Validated by `submitCodeSchema` |
 
 ### Progress (all authenticated)
 
@@ -298,30 +319,32 @@ Authentication uses httpOnly JWT cookies. Protected endpoints require the `token
 | GET | `/api/progress/:courseKey` | Yes | Get user's progress for a course (completed count, per-lesson status) |
 | POST | `/api/progress/:courseKey/:lessonSlug/complete` | Yes | Mark a lesson as completed |
 | GET | `/api/progress/:courseKey/:lessonSlug/code` | Yes | Get user's saved code for a lesson |
-| PUT | `/api/progress/:courseKey/:lessonSlug/code` | Yes | Save user's code for a lesson |
+| PUT | `/api/progress/:courseKey/:lessonSlug/code` | Yes | Save user's code for a lesson. Validated by `saveCodeSchema` |
 | POST | `/api/progress/:courseKey/:lessonSlug/access` | Yes | Track last access time for a lesson |
 
 ## Database Schema
 
-6 tables across 2 migration phases. The first phase (001–003) defines the content structure, the second (004–005) adds user progress tracking. Migration 006 seeds the curriculum data.
+The schema is defined in [`prisma/schema.prisma`](prisma/schema.prisma) — it is the single source of truth. Migrations live in `prisma/migrations/` and are applied with `prisma migrate deploy`.
 
-### Tables
+### Models
 
-- **users** — account data (name, email, hashed password, created_at)
-- **curriculum** — course definitions (key, title, description, sort_order). Unique on `key`
-- **lessons** — lesson metadata (course_key, slug, title, sort_order, has_code_file). Unique on `(course_key, slug)`
-- **user_lesson_progress** — per-user lesson completion tracking (completed flag, completed_at, last_accessed_at). Unique on `(user_id, course_key, lesson_slug)`. Indexed on `user_id` and `(user_id, course_key)`
-- **user_saved_code** — per-user saved code for each lesson (code text, updated_at). Unique on `(user_id, course_key, lesson_slug)`. Indexed on `user_id`
+- **User** (`users`) — account data (name, email, hashed password, createdAt). Email is unique.
+- **Curriculum** (`curriculum`) — course definitions (key, title, description, sortOrder). `key` is unique.
+- **Lesson** (`lessons`) — lesson metadata (courseKey, slug, title, sortOrder, hasCodeFile). Unique on `(courseKey, slug)`.
+- **UserLessonProgress** (`user_lesson_progress`) — per-user lesson completion (completed, completedAt, lastAccessedAt). Unique on `(userId, courseKey, lessonSlug)`. Indexed on `userId` and `(userId, courseKey)`.
+- **UserSavedCode** (`user_saved_code`) — per-user saved code per lesson (code, updatedAt). Unique on `(userId, courseKey, lessonSlug)`. Indexed on `userId`.
+
+Field names use camelCase in TypeScript (`courseKey`, `sortOrder`, `completedAt`) and are mapped to snake_case columns (`course_key`, `sort_order`, `completed_at`) via Prisma's `@map`/`@@map`. Table names also use snake_case via `@@map`.
 
 ### Relationships
 
 ```
-users (1) ──→ (N) user_lesson_progress   (ON DELETE CASCADE)
-users (1) ──→ (N) user_saved_code        (ON DELETE CASCADE)
-curriculum.key ←── lessons.course_key     (logical, not FK — kept simple)
+User (1) ──→ (N) UserLessonProgress    (ON DELETE CASCADE)
+User (1) ──→ (N) UserSavedCode         (ON DELETE CASCADE)
+Curriculum.key ←── Lesson.courseKey     (logical, not enforced as FK — kept simple)
 ```
 
-Lesson content itself is stored as Markdown files on the filesystem (`back/lessons/:lang/:slug.md`), not in the database. The `lessons` table stores metadata (ordering, titles) while the actual content is read from disk at request time.
+Lesson content itself is stored as Markdown files on the filesystem (`server/lessons/:lang/:slug.md`), not in the database. The `Lesson` table stores metadata (ordering, titles) while the actual content is read from disk at request time.
 
 ## Code Execution
 
@@ -351,7 +374,7 @@ The execution flow: write code to a temp file → run Docker container with volu
 
 ## Lesson Content
 
-Lessons are authored in Markdown and stored in `back/lessons/:language/`. Each lesson consists of:
+Lessons are authored in Markdown and stored in `server/lessons/:language/`. Each lesson consists of:
 
 - **`lesson-slug.md`** — the educational content (explanations, examples, inline code blocks)
 - **`lesson-slug-code.md`** — the starter code template for the right-side editor
@@ -370,7 +393,7 @@ Each lesson's test file defines an array of test cases. Supported test modes:
 | `any` | Any non-empty output passes |
 | `line` | A specific line of the output must match (by line index) |
 
-Tests can also use `overrides` to inject variable values into user code (for testing different inputs on the same logic), and `append` to add function calls after user code (for testing function definitions).
+Tests can also use `overrides` to inject variable values into user code (for testing different inputs on the same logic), and `append` to add function calls after user code (for testing function definitions). The full test case shape lives in `shared/tests.ts` and is the same type used by both the test runner on the server and the result rendering on the client.
 
 ### Available lessons
 
@@ -380,11 +403,17 @@ Tests can also use `overrides` to inject variable values into user code (for tes
 | C | 2 | variables, print |
 | Java | 2 | variables, print |
 
-Adding a new lesson requires: (1) creating the `.md` file in `back/lessons/:lang/`, (2) optionally creating a `-code.md` starter template, (3) creating a `-tests.json` file with test cases, and (4) adding a row to the `lessons` table via a new migration or direct insert.
+Adding a new lesson requires: (1) creating the `.md` file in `server/lessons/:lang/`, (2) optionally creating a `-code.md` starter template, (3) creating a `-tests.json` file with test cases, and (4) adding the lesson row to the database — either by extending `prisma/seed.ts` and running `npm run db:seed`, or by adding a fresh Prisma migration.
 
 ## Architecture Decisions
 
-- **Controller → Service → Repository**: The backend follows a strict three-layer separation. Controllers handle HTTP concerns (req/res, cookies), services contain business logic (password hashing, token creation, progress aggregation), and repositories are pure SQL. This keeps each layer testable and replaceable independently.
+- **Controller → Service → Repository**: The backend follows a strict three-layer separation. Controllers handle HTTP concerns (req/res, cookies), services contain business logic (password hashing, token creation, progress aggregation), and repositories are the only place Prisma is touched. Each layer is testable and replaceable independently.
+
+- **Prisma over hand-written SQL**: The data layer uses Prisma Client, with `prisma/schema.prisma` as the single source of truth for both the database structure and the TypeScript types in repositories. Migrations are versioned in `prisma/migrations/` and applied with `prisma migrate deploy`. Seed data lives in `prisma/seed.ts` (TypeScript), not SQL — it's idempotent (`upsert`) so it can run safely on top of an existing DB.
+
+- **Zod-validated request bodies**: Every write endpoint (`POST` / `PUT`) is wrapped in a `validateBody(schema)` middleware that parses the body through a Zod schema from `server/schemas/`. Invalid input never reaches a controller — the middleware returns `400` with a list of issues. Schemas double as inferred TypeScript types, so the validated body is fully typed downstream.
+
+- **Shared types between client and server**: A top-level `shared/` directory holds DTO/contract types (`auth`, `lesson`, `progress`, `tests`) imported by both `server/` and `client/`. The wire format is defined exactly once. If the server response shape changes, the frontend type-check fails immediately rather than silently drifting.
 
 - **Cookie-based auth over Bearer tokens**: JWT tokens are stored in httpOnly cookies instead of localStorage. This prevents XSS from accessing tokens — the browser handles cookie attachment automatically via `credentials: "include"`, and the server never exposes the token to JavaScript.
 
@@ -396,7 +425,11 @@ Adding a new lesson requires: (1) creating the `.md` file in `back/lessons/:lang
 
 - **Test-driven lesson completion**: Lessons are completed by passing all test cases, not by clicking a button. This ensures learners actually solve the exercise. Test cases are defined as JSON files on disk alongside lesson content, supporting exact match, contains, line-based checks, variable overrides (for testing different inputs), and code appending (for testing function definitions).
 
-- **Dual code execution strategy**: Development uses Docker for offline work and full control; production uses the free Piston API to avoid running Docker in hosted environments. The `codeExecutionService` abstracts this behind a single `execute(code, language)` interface — the rest of the app doesn't know which backend is running.
+- **Dual code execution strategy**: Development uses Docker for offline work and full control; production uses the free Piston API to avoid running Docker in hosted environments. The `code-execution.service` abstracts this behind a single `execute(code, language)` interface — the rest of the app doesn't know which backend is running.
+
+- **Configuration split**: Environment loading and validation live in `server/config/env.ts` (with a small `required()` helper that throws if a critical variable is missing). The Prisma Client singleton lives in `server/config/db.ts`. `server/config/index.ts` re-exports both, so the rest of the codebase imports configuration from a single place.
+
+- **File naming convention**: Backend files in `controllers/`, `services/`, `repositories/`, and `routes/` use the `<entity>.<role>.ts` convention (`auth.controller.ts`, `progress.service.ts`, `user.repository.ts`). It's instantly clear what layer a file belongs to when many tabs are open.
 
 - **Vite proxy in development**: The Vite dev server proxies `/api` and `/auth` requests to the Express backend, eliminating CORS issues in development and allowing the frontend to use relative paths. In production, the Express server serves the built SPA directly, so no proxy is needed.
 
