@@ -1,6 +1,6 @@
 # CyberStars
 
-A free interactive coding education platform where users learn Python, C, and Java through structured lessons with embedded runnable code examples. Each lesson includes educational content on the left and a live code editor on the right, so learners can read, write, and execute code in the same view. Logged-in users get progress tracking and code persistence across sessions.
+A free interactive coding education platform, inspired by freeCodeCamp, where users learn Python, C, and Java through structured lessons with embedded runnable code examples. Each lesson includes educational content on the left and a live code editor on the right, so learners can read, write, and execute code in the same view. Logged-in users get progress tracking and code persistence across sessions.
 
 > **Note:** This is a portfolio project. This README intentionally includes detailed API endpoints, database schema, and architecture decisions that would normally live in internal documentation — the goal is to give reviewers a complete picture of the system without having to dig through the code.
 
