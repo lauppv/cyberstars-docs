@@ -26,10 +26,12 @@ A free interactive coding education platform where users learn Python, C, and Ja
 - **Multi-language support** — Python (18 lessons), C (16 lessons), Java (17 lessons) with language-specific syntax highlighting
 - **Remote code execution** — user code runs server-side via Piston API (production) or Docker containers (development), not in the browser
 - **Progress tracking** — lessons are automatically marked complete when all test cases pass, with per-course progress bars on the curriculum page
+- **Gamification UI** — XP bar (15 XP per lesson, 300 XP per level), level badge, streak widget, achievement toasts on completion, and 4 unlockable badges (First Code / Speed Run / Bug Squasher / Perfect Score). All values are derived from real `UserLessonProgress` data — no separate gamification tables
+- **Persistent course sidebar** — when viewing a lesson, a sidebar shows every lesson in the current course with a numbered marker (active = accent, completed = green ✓), a course progress bar, and the badges grid
 - **Code persistence** — user code is saved per lesson and restored on revisit, so learners never lose their work
 - **Curriculum from database** — courses and lessons are served from PostgreSQL with ordering, not hardcoded in the frontend
 - **JWT authentication** — signup/login with httpOnly cookie-based sessions
-- **Dark theme** — clean dark palette with soft blue accents, easy on the eyes
+- **Dark theme with design tokens** — palette built around an `--accent` purple (`#6C5CE7`), Space Grotesk for UI, JetBrains Mono for code; everything driven by CSS custom properties so theming/recoloring is a one-file change
 
 ## Screenshots
 
@@ -255,7 +257,7 @@ cyberstars/
 ├── client/                                  # Frontend (React + TypeScript)
 │   ├── main.tsx                            # React entry point
 │   ├── App.tsx                             # Router setup, AuthProvider wrapper
-│   ├── index.css                           # Tailwind imports + custom scrollbar styles
+│   ├── index.css                           # Google Fonts, design tokens (CSS variables), lesson body markdown styles, scrollbars
 │   ├── vite-env.d.ts                       # Vite type declarations
 │   ├── types/
 │   │   └── api.ts                          # ApiError + isApiError (frontend-only helper)
@@ -270,18 +272,19 @@ cyberstars/
 │   ├── hooks/
 │   │   ├── useLesson.ts                    # Fetches lesson content + saved code or template
 │   │   ├── useCodeExecution.ts             # Runs code with loading/output state
-│   │   └── useProgress.ts                  # Track/save progress per course
+│   │   ├── useProgress.ts                  # Track/save progress per course
+│   │   └── useGamification.ts              # Derives XP, level, badges from real progress (no separate DB tables)
 │   ├── components/
-│   │   ├── ui/                             # Button, Input, Modal, LoadingSpinner
-│   │   ├── layout/                         # Navbar, PageContainer
+│   │   ├── ui/                             # Button (5 variants), Input, Modal, LoadingSpinner
+│   │   ├── layout/                         # Topbar (logo + breadcrumb + streak + avatar), Sidebar (lesson nav + progress + badges)
+│   │   ├── gamification/                   # XPBar, StreakWidget, Badge, AchievementToast
 │   │   ├── code/                           # CodeEditor, CodeOutput, TestResults, CodeCell, RunButton
-│   │   ├── markdown/                       # MarkdownRenderer (with CodeCell for runnable blocks)
-│   │   └── progress/                       # ProgressBar, LessonStatusBadge
+│   │   └── markdown/                       # MarkdownRenderer (with CodeCell for runnable blocks)
 │   └── pages/
-│       ├── HomePage.tsx                    # Landing page with auth-aware greeting
-│       ├── AuthPage.tsx                    # Login/signup toggle form
-│       ├── CurriculumPage.tsx              # Course grid with progress + lesson modal
-│       └── LessonPage.tsx                  # Split-screen lesson view (content + editor)
+│       ├── HomePage.tsx                    # Hero landing — level/XP/badges if logged in, feature cards otherwise
+│       ├── AuthPage.tsx                    # Login/signup card with logo + Topbar
+│       ├── CurriculumPage.tsx              # Course cards with emoji icons + progress; click goes straight to lesson 1
+│       └── LessonPage.tsx                  # Topbar + XPBar + Sidebar + content split + editor panel + Output
 │
 ├── index.html                              # HTML entry point
 ├── package.json                            # Dependencies + scripts
@@ -441,6 +444,14 @@ Adding a new lesson requires: (1) creating the `.md` file in `server/lessons/:la
 - **AuthContext over per-page auth checks**: A single `AuthContext` provider wraps the entire app and checks `/auth/me` once on mount. Every page and component accesses auth state via `useAuth()` — no duplicate fetch calls, no prop drilling, and login/logout state updates propagate everywhere instantly.
 
 - **Test-driven lesson completion**: Lessons are completed by passing all test cases, not by clicking a button. This ensures learners actually solve the exercise. Test cases are defined as JSON files on disk alongside lesson content, supporting exact match, contains, line-based checks, variable overrides (for testing different inputs), and code appending (for testing function definitions).
+
+- **Design tokens via CSS variables, not Tailwind config**: Colors, fonts, radii, and shadows are declared once in `client/index.css` as `--accent`, `--bg`, `--bg2`, `--surface`, etc. Components reference them through Tailwind's arbitrary-value syntax (`bg-[var(--accent)]`, `text-[var(--text2)]`). Re-theming or building a light mode is a matter of overriding a handful of variables; no rebuild or component changes required. The values came from a Claude Design handoff spec — see `client/index.css` for the full palette.
+
+- **Gamification derived, not stored**: XP, level, and badges are computed on the client from `UserLessonProgress` data already in the DB (`useGamification.ts` hook). 15 XP per completed lesson; level = floor(xp / 300) + 1; badges unlock at lesson-count thresholds and on full course completion. No new tables, no new endpoints, no risk of XP and progress drifting out of sync. Streak is currently a placeholder — adding it would require a `user_activity` table to track daily logins.
+
+- **Persistent course-aware sidebar in lesson view**: The lesson layout is `Topbar + XPBar + Sidebar + content split + editor panel`. The sidebar lists every lesson in the *current course* with progress markers (numbered circle / green ✓), a course progress bar, and the badges grid — so the learner always knows where they are in the course and what's coming next, without leaving the lesson page.
+
+- **User-resizable editor panel**: The right-side editor panel has a draggable splitter on its left edge — the user can drag it left/right to give more room to either the lesson text or the editor. The width is persisted to `localStorage` so it sticks across page loads. Constraints: minimum ~360px (so the editor stays usable), maximum ~70% of the viewport (so the lesson body doesn't disappear). The CodeMirror editor inside soft-wraps long lines — no horizontal scroll, code never falls off-screen.
 
 - **Dual code execution strategy**: Development uses Docker for offline work and full control; production uses the free Piston API to avoid running Docker in hosted environments. The `code-execution.service` abstracts this behind a single `execute(code, language)` interface — the rest of the app doesn't know which backend is running.
 
