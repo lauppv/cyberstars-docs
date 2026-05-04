@@ -23,7 +23,7 @@ A free interactive coding education platform where users learn Python, C, and Ja
 - **Split-screen lesson view** — educational Markdown content on the left, live code editor (CodeMirror) on the right
 - **Inline runnable code blocks** — code examples inside lesson text are interactive; click "Run Code" to execute them directly in the lesson
 - **Test case validation** — each lesson has test cases that verify the user's code (like LeetCode). A lesson is marked complete only when all tests pass — there is no manual "complete" button
-- **Multi-language support** — Python (10 lessons), C (2 lessons), Java (2 lessons) with language-specific syntax highlighting
+- **Multi-language support** — Python (18 lessons), C (16 lessons), Java (17 lessons) with language-specific syntax highlighting
 - **Remote code execution** — user code runs server-side via Piston API (production) or Docker containers (development), not in the browser
 - **Progress tracking** — lessons are automatically marked complete when all test cases pass, with per-course progress bars on the curriculum page
 - **Code persistence** — user code is saved per lesson and restored on revisit, so learners never lose their work
@@ -182,6 +182,9 @@ npm run start
 | `JWT_SECRET` | Secret for signing JWT tokens | Yes | — |
 | `NODE_ENV` | `development` or `production` | No | `development` |
 | `VITE_PROD_API_URL` | Production API URL (for deployed frontend) | Production only | — |
+| `CODE_RUN_DIR` | Host directory for per-run scratch dirs (dev Docker runner) | No | `os.tmpdir()/cyberstars-runs` |
+| `CODE_RUN_MEMORY` | Per-container memory limit passed to `docker run --memory=` | No | `128m` |
+| `CODE_RUN_PIDS` | Per-container PID limit passed to `docker run --pids-limit=` | No | `64` |
 
 ## Project Structure
 
@@ -242,9 +245,12 @@ cyberstars/
 │   │   ├── python/                         # 10 lessons (print, variables, loops, functions, etc.)
 │   │   ├── c/                              # 2 lessons (variables, print)
 │   │   └── java/                           # 2 lessons (variables, print)
-│   └── runtimes/                           # Docker images + scratch dirs for dev code execution
-│       ├── python/
-│       └── c/
+│   └── runtimes/                           # Language registry — one file per supported language
+│       ├── types.ts                        # LanguageRuntime interface (image, pistonVersion, innerCmd)
+│       ├── registry.ts                     # getRuntime(lang) — single source of truth for supported langs
+│       ├── python.ts                       # Python runtime config
+│       ├── c.ts                            # C runtime config
+│       └── java.ts                         # Java runtime config
 │
 ├── client/                                  # Frontend (React + TypeScript)
 │   ├── main.tsx                            # React entry point
@@ -364,13 +370,24 @@ The [Piston API](https://github.com/engineer-man/piston) is a free, open-source 
 
 In development, code runs in local Docker containers with volume-mounted temp directories:
 
-| Language | Docker Image | Container |
-|----------|-------------|-----------|
-| Python | `python-runtime` (custom) | `python:latest` base |
-| C | `gcc:12.2.0` | Compiles + runs with 5s timeout |
-| Java | `openjdk:20` | Compiles + runs with 5s timeout |
+| Language | Docker Image | Behavior |
+|----------|-------------|----------|
+| Python | `python:3.10-slim` | Runs with 5s timeout |
+| C | `gcc:12.2.0` | Compiles with `-Wall`, then runs binary with 5s timeout |
+| Java | `openjdk:20` | `javac` then runs `Main` with 5s timeout |
 
-The execution flow: write code to a temp file → run Docker container with volume mount → read output file → return result. All executions have a 5-second timeout to prevent infinite loops.
+The execution flow: create a per-run temp dir under `os.tmpdir()/cyberstars-runs/<uuid>/` → write `<sourceFile>`, `stdin.txt`, empty `output.txt` → run the container with the dir mounted at `/work` → read `output.txt` → cleanup. All executions have a 5-second timeout to prevent infinite loops.
+
+Containers are launched with sandboxing flags by default — `--network=none`, `--memory=128m`, `--pids-limit=64` — and Docker is invoked via `execFile` with an argument array (no shell interpolation). CPU is unbounded (the per-runtime `timeout 5` inside the inner command stops infinite loops). The limits can be tuned via the `CODE_RUN_*` env vars.
+
+### Adding a new language
+
+The runner is generic over the `LanguageRuntime` interface in `server/runtimes/types.ts`. Adding a language is two steps:
+
+1. Create `server/runtimes/<lang>.ts` exporting an object with `name`, `image`, `pistonVersion`, `sourceFile`, and `innerCmd` (the shell command run inside the container; uses fixed paths under `/work/`).
+2. Register it in `server/runtimes/registry.ts`.
+
+No changes to the service, controllers, or routes are required.
 
 ## Lesson Content
 
@@ -399,9 +416,9 @@ Tests can also use `overrides` to inject variable values into user code (for tes
 
 | Language | Lessons | Topics |
 |----------|---------|--------|
-| Python | 10 | print, string variables, integer variables, f-strings, comments, if/else, if/elif/else, for loops, while loops, functions |
-| C | 2 | variables, print |
-| Java | 2 | variables, print |
+| Python | 18 | print, string variables, integer variables, f-strings, comments, if/else, if/elif/else, for loops, while loops, functions, input, operators, booleans, string methods, lists, looping over lists, break/continue, return values |
+| C | 16 | print, variables (integers/floats), comments, if/else, if/else if/else, for loops, while loops, functions, input (scanf), operators, booleans, strings, arrays, looping over arrays, break/continue |
+| Java | 17 | print, variables (numbers/strings), string concatenation, comments, if/else, if/else if/else, for loops, while loops, methods, input (Scanner), operators, booleans, string methods, arrays, looping over arrays, break/continue |
 
 Adding a new lesson requires: (1) creating the `.md` file in `server/lessons/:lang/`, (2) optionally creating a `-code.md` starter template, (3) creating a `-tests.json` file with test cases, and (4) adding the lesson row to the database — either by extending `prisma/seed.ts` and running `npm run db:seed`, or by adding a fresh Prisma migration.
 
@@ -426,6 +443,10 @@ Adding a new lesson requires: (1) creating the `.md` file in `server/lessons/:la
 - **Test-driven lesson completion**: Lessons are completed by passing all test cases, not by clicking a button. This ensures learners actually solve the exercise. Test cases are defined as JSON files on disk alongside lesson content, supporting exact match, contains, line-based checks, variable overrides (for testing different inputs), and code appending (for testing function definitions).
 
 - **Dual code execution strategy**: Development uses Docker for offline work and full control; production uses the free Piston API to avoid running Docker in hosted environments. The `code-execution.service` abstracts this behind a single `execute(code, language)` interface — the rest of the app doesn't know which backend is running.
+
+- **Language runtime registry**: Per-language config (Docker image, Piston version, source filename, inner shell command) is isolated in `server/runtimes/<lang>.ts` files behind a `LanguageRuntime` interface. The execution service is fully generic — there is no `switch (language)` anywhere in the runner. Adding a new language is one file plus one line in `registry.ts`, with zero changes to the service, controllers, or routes.
+
+- **Sandboxed code execution**: Docker is invoked via `execFile("docker", [...args])` with an argument array — no shell, no string interpolation, no injection surface. Containers run with `--network=none`, memory and PID limits, and the per-run scratch dir lives under `os.tmpdir()` instead of inside the source tree (so `tsx watch` doesn't reload on every execution). CPU is intentionally unbounded so user code can use the full machine when needed; infinite loops are stopped by the `timeout 5` wrapper inside each runtime's inner command. All limits are env-tunable via `CODE_RUN_*` variables.
 
 - **Configuration split**: Environment loading and validation live in `server/config/env.ts` (with a small `required()` helper that throws if a critical variable is missing). The Prisma Client singleton lives in `server/config/db.ts`. `server/config/index.ts` re-exports both, so the rest of the codebase imports configuration from a single place.
 
