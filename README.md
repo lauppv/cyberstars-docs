@@ -35,13 +35,10 @@ A free interactive coding education platform where users learn Python, C, and Ja
 
 ## Screenshots
 
-![Home Page](screenshots/1.png)
-![Home Page - Logged In](screenshots/2.png)
-![Curriculum Page](screenshots/3.png)
-![Curriculum - Lesson List with Progress](screenshots/4.png)
-![Lesson View - Submitting Code](screenshots/5.png)
-![Lesson View - All Tests Passed](screenshots/6.png)
-![Lesson View - Tests Failed](screenshots/7.png)
+![Dashboard](screenshots/dashboard.png)
+![Curriculum - Course Select](screenshots/select.png)
+![Lesson View - All Tests Passed](screenshots/success.png)
+![Lesson View - Tests Failed](screenshots/fail.png)
 
 ## Tech Stack
 
